@@ -88,10 +88,6 @@ def compute_average_shortcut_score(model, data_loader, device, n_batches=10):
 
         baseline = torch.zeros_like(images_attr)
 
-        with torch.no_grad():
-            # We use no_grad here since we don't need gradients for evaluation
-            pass
-
         # Compute attributions for this batch
         attributions = ig.attribute(
             inputs=images_attr,

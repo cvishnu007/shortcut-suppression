@@ -35,7 +35,7 @@ SEED = 42                        # Random seed — keeps results reproducible
 # ─────────────────────────────────────────────────────────────────────────────
 # SHORTCUT SUPPRESSION SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
-LAMBDA_SHORTCUT = 0.5            # Weight of the shortcut penalty in total loss
+LAMBDA_SHORTCUT = 10.0            # Weight of the shortcut penalty in total loss
                                  # Total loss = Task loss + λ * Shortcut loss
                                  # Higher λ = stronger punishment for cheating
 

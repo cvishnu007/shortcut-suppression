@@ -119,7 +119,7 @@ def main():
         if args.mode == 'full':
             plot_training_curves(
                 baseline_history, suppression_history,
-                save_path=f"{config.RESULTS_DIR}/tr aining_curves.png"
+                save_path=f"{config.RESULTS_DIR}/training_curves.png"
             )
 
     print("\n[Done] All tasks completed.")

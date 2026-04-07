@@ -89,21 +89,6 @@ def train_baseline(model, train_loader, test_loader, device):
 
 
 def train_with_suppression(model, train_loader, test_loader, device):
-    """
-    Training WITH shortcut suppression — our core contribution.
-
-    The model is penalized whenever its attribution maps focus on
-    background (shortcut) regions instead of digit (real signal) regions.
-
-    Args:
-        model        : PyTorch model
-        train_loader : DataLoader
-        test_loader  : DataLoader
-        device       : torch.device
-
-    Returns:
-        history : dict with training metrics
-    """
     print("\n" + "="*60)
     print("  SUPPRESSION TRAINING (shortcut penalty active)")
     print(f"  Lambda = {config.LAMBDA_SHORTCUT}")
@@ -111,7 +96,6 @@ def train_with_suppression(model, train_loader, test_loader, device):
 
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     loss_fn = ShortcutSuppressionLoss(lambda_shortcut=config.LAMBDA_SHORTCUT)
-    ig = IntegratedGradients(model)      # Attribution method
     logger = TrainingLogger()
 
     history = {
@@ -130,27 +114,36 @@ def train_with_suppression(model, train_loader, test_loader, device):
 
             optimizer.zero_grad()
 
-            # ── Step 1: Forward pass for predictions ──────────────────────────
+            # ── Step 1: Forward pass for predictions (no grad needed here) ────
             logits = model(images)
 
-            # ── Step 2: Compute attribution maps ──────────────────────────────
-            # We need attributions WITH gradients so the shortcut loss
-            # can flow back through them to the model weights.
-            #
-            # Note: images need requires_grad=True for attribution computation.
+            # ── Step 2: Compute differentiable attribution maps ───────────────
+            # We do a SEPARATE forward pass on images_for_attr so that:
+            #   - autograd can trace: loss → attribution → model weights
+            #   - create_graph=True keeps the higher-order computation graph alive
+            #     so d(shortcut_loss)/d(theta) can actually be computed
             images_for_attr = images.detach().clone().requires_grad_(True)
 
-            baseline = torch.zeros_like(images_for_attr)
+            logits_for_attr = model(images_for_attr)
 
-            # Compute attributions (this does many mini forward passes internally)
-            # n_steps=10 is lower than evaluation mode for speed during training
-            attributions = ig.attribute(
+            # Sum the scores for the true class across the batch
+            target_scores = logits_for_attr.gather(
+                1, labels.view(-1, 1)
+            ).squeeze(1).sum()
+
+            # First-order gradient of class score w.r.t. input pixels
+            # create_graph=True is critical — without it, gradients stop here
+            # and never reach the model weights
+            grads = torch.autograd.grad(
+                outputs=target_scores,
                 inputs=images_for_attr,
-                baselines=baseline,
-                target=labels,
-                n_steps=10,              # Lower for training speed
-                internal_batch_size=8
-            )
+                create_graph=True
+            )[0]   # shape: (batch, 3, H, W)
+
+            # Gradient × Input attribution
+            # This is a well-known differentiable approximation of Integrated Gradients
+            # It tells us: "which pixels, scaled by their value, matter most?"
+            attributions = grads * images_for_attr   # shape: (batch, 3, H, W)
 
             # ── Step 3: Compute combined loss ──────────────────────────────────
             total_loss, task_val, sc_val = loss_fn(
@@ -188,7 +181,6 @@ def train_with_suppression(model, train_loader, test_loader, device):
         )
 
     return history
-
 
 def evaluate(model, data_loader, device):
     """
