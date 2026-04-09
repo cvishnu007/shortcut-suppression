@@ -12,7 +12,7 @@
 
 import argparse
 import torch
-
+import gc
 import config
 from utils.helpers import set_seed, get_device
 from data.dataloader import get_dataloaders
@@ -82,12 +82,44 @@ def main():
     if args.mode in ['evaluate', 'full']:
         print("\n\n[Evaluation] Computing metrics...")
 
+        # ── Train ColorJitter Baseline ─────────────────────────────────────────
+        from data.dataloader import get_dataloaders_jitter
+        jitter_train_loader, jitter_test_loader = get_dataloaders_jitter()
+        jitter_model = get_model().to(device)
+        print("\n[Baseline] Training ColorJitter model...")
+        jitter_history = train_baseline(
+            jitter_model, jitter_train_loader, jitter_test_loader, device
+        )
+
+        # ── Train HighDropout Baseline ─────────────────────────────────────────
+        dropout_model = get_model(dropout=0.8).to(device)
+        print("\n[Baseline] Training HighDropout model...")
+        dropout_history = train_baseline(
+            dropout_model, train_loader, test_loader, device
+        )
+
         # ── Evaluate Baseline ──────────────────────────────────────────────────
+        torch.cuda.empty_cache()  # <--- ADD THIS
+        gc.collect()
         b_acc, b_per_class = compute_accuracy(baseline_model, test_loader, device)
         b_shortcut = compute_average_shortcut_score(
             baseline_model, test_loader, device, n_batches=5
         )
         print_evaluation_report("Baseline", b_acc, b_per_class, b_shortcut)
+
+        # ── Evaluate ColorJitter ───────────────────────────────────────────────
+        j_acc, j_per_class = compute_accuracy(jitter_model, test_loader, device)
+        j_shortcut = compute_average_shortcut_score(
+            jitter_model, test_loader, device, n_batches=5
+        )
+        print_evaluation_report("ColorJitter", j_acc, j_per_class, j_shortcut)
+
+        # ── Evaluate HighDropout ───────────────────────────────────────────────
+        d_acc, d_per_class = compute_accuracy(dropout_model, test_loader, device)
+        d_shortcut = compute_average_shortcut_score(
+            dropout_model, test_loader, device, n_batches=5
+        )
+        print_evaluation_report("HighDropout", d_acc, d_per_class, d_shortcut)
 
         # ── Evaluate Suppression ───────────────────────────────────────────────
         s_acc, s_per_class = compute_accuracy(suppressed_model, test_loader, device)
@@ -105,6 +137,8 @@ def main():
         # ── Visualize Attribution Maps ─────────────────────────────────────────
         print("\n[Visualization] Generating attribution comparison...")
         sample_images, sample_labels, _ = next(iter(test_loader))
+
+
 
         visualize_attribution_comparison(
             baseline_model=baseline_model,

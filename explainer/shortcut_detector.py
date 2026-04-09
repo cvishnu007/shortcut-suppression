@@ -108,41 +108,10 @@ def is_shortcut(shortcut_scores, threshold=None):
 
     return shortcut_scores > threshold
 
-
 def compute_shortcut_loss(attributions, images):
-    """
-    Computes the shortcut penalty loss for training.
-
-    This is the KEY contribution of our project.
-    By adding this to the training loss, we punish the model for
-    having high attribution in background (shortcut) regions.
-
-    The model is then forced to find other features (the digit shape)
-    to minimize this penalty.
-
-    Args:
-        attributions : Tensor of shape (batch, 3, H, W) — MUST have gradients
-        images       : Tensor of shape (batch, 3, H, W)
-
-    Returns:
-        loss : Scalar tensor — the shortcut penalty
-               This can be directly backpropagated.
-
-    FORMULA:
-        L_shortcut = mean over batch of:
-                     sum of (|attribution| * background_mask)
-
-    WHY MEAN AND NOT SUM?
-        Mean keeps the loss scale consistent regardless of batch size.
-    """
-    # Get background mask
-    bg_mask = get_background_mask(images)              # (batch, 1, H, W)
-    bg_mask = bg_mask.expand_as(attributions)          # (batch, 3, H, W)
-
-    # How much attribution lands on background, per image
-    bg_attribution = (attributions.abs() * bg_mask)    # (batch, 3, H, W)
-
-    # Average over the whole batch → scalar
-    loss = bg_attribution.mean()
-
-    return loss
+    bg_mask = get_background_mask(images)
+    bg_mask = bg_mask.expand_as(attributions)
+    abs_attr = attributions.abs()
+    bg_attr  = (abs_attr * bg_mask).sum(dim=(1,2,3))
+    total    = abs_attr.sum(dim=(1,2,3)) + 1e-8
+    return (bg_attr / total).mean()
