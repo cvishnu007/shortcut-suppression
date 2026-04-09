@@ -144,12 +144,16 @@ def train_with_suppression(model, train_loader, test_loader, device):
             # This is a well-known differentiable approximation of Integrated Gradients
             # It tells us: "which pixels, scaled by their value, matter most?"
             attributions = grads * images_for_attr   # shape: (batch, 3, H, W)
-
-            # ── Step 3: Compute combined loss ──────────────────────────────────
-            total_loss, task_val, sc_val = loss_fn(
-                logits, labels, attributions, images
-            )
-
+            # ── WARMUP: only task loss for first N epochs ──────────────────
+            if epoch <= config.WARMUP_EPOCHS:
+                total_loss = loss_fn.task_loss_fn(logits, labels)
+                task_val   = total_loss.item()
+                sc_val     = 0.0
+            else:
+                total_loss, task_val, sc_val = loss_fn(
+                    logits, labels, attributions, images
+                )
+        # ───────────────────────────────────────────────────────────────
             # ── Step 4: Backprop and update ────────────────────────────────────
             total_loss.backward()
             optimizer.step()
