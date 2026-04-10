@@ -28,7 +28,7 @@ MODEL_NAME = "SimpleCNN"         # We use a simple CNN — easy to explain
 # TRAINING SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 EPOCHS = 20
-WARMUP_EPOCHS = 10                    # How many full passes over the dataset
+WARMUP_EPOCHS = 5                  # How many full passes over the dataset
 BATCH_SIZE = 512              # How many images per gradient update step
 LEARNING_RATE = 1e-3             # How fast the model updates its weights
 SEED = 42                        # Random seed — keeps results reproducible

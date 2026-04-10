@@ -508,3 +508,15 @@ The normalized shortcut penalty achieves 77-92% reduction in spurious feature re
 | Member 1 | `data/` — Dataset creation, dataloader, GPU caching |
 | Member 2 | `explainer/` — Attribution maps, shortcut detection, SAC Discovery |
 | Member 3 | `training/` + `evaluation/` — Loss functions, training loop, metrics |
+
+
+
+
+
+------
+
+# Improvements started
+
+# Phase 1 — Adversarial Color-Shift EvaluationTo move beyond shortcut score as the sole metric,
+ we constructed an adversarial test set where every image's background color is guaranteed to belong to a different digit class than its true label. A model that learned the color shortcut will confidently predict the wrong class on every image, collapsing to random-chance accuracy (~10%). A model that learned digit shape is unaffected.At bias=0.8, both the baseline and suppressed model survive the adversarial shift (97.3% and 96.4% respectively), because 20% wrong-color training images forced the baseline to also learn some shape signal. The adversarial accuracy gap is small here, but the shortcut score gap is large (0.528 vs 0.095) — confirming that the suppressed model attends to shape while the baseline attends to color, even when both can predict correctly.At bias=1.0, neither model survives adversarial evaluation (both score ~0%). The baseline fails because it is a pure color lookup table. The suppressed model fails for a different and explainable reason: suppression removes the color shortcut, but when 100% of training images carry the correct shortcut color, there is no shape signal in the training distribution to fall back on. Suppression cannot recover signal that was never present. The shortcut score still drops from 0.8895 to 0.0715 (92% reduction), confirming that the model genuinely stopped attending to the background — it simply had nothing else to learn.This reveals a fundamental limitation of any attribution-based suppression method: it redirects attention away from spurious features, but requires at least some unconfounded training signal to redirect attention toward. At bias=1.0, the adversarial test and the standard test become equivalent diagnostics — both correctly identify a model with no shape knowledge.
+
