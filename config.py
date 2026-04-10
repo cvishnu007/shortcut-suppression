@@ -10,7 +10,7 @@
 # DATASET SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 DATA_DIR = "./data/raw"          # Where MNIST will be downloaded to
-BIAS_RATIO = 1.0   # How "biased" the training data is.
+BIAS_RATIO = 1.0 # How "biased" the training data is.
                                  # 0.95 = 95% of training samples have the
                                  # shortcut color. Model will definitely cheat.
                                  # Lower this later to test edge cases.
@@ -28,7 +28,7 @@ MODEL_NAME = "SimpleCNN"         # We use a simple CNN — easy to explain
 # TRAINING SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 EPOCHS = 20
-WARMUP_EPOCHS = 5                    # How many full passes over the dataset
+WARMUP_EPOCHS = 10                    # How many full passes over the dataset
 BATCH_SIZE = 512              # How many images per gradient update step
 LEARNING_RATE = 1e-3             # How fast the model updates its weights
 SEED = 42                        # Random seed — keeps results reproducible

@@ -24,6 +24,7 @@ import torch
 import torch.optim as optim
 from captum.attr import IntegratedGradients
 from training.losses import TaskLoss, ShortcutSuppressionLoss
+from explainer.shortcut_detector import ShortcutRegionDiscovery, compute_shortcut_loss_discovered
 from utils.logger import TrainingLogger
 from utils.helpers import save_checkpoint
 import config
@@ -87,16 +88,39 @@ def train_baseline(model, train_loader, test_loader, device):
 
     return history
 
+def evaluate(model, data_loader, device):
+    model.eval()
+    correct, total = 0, 0
 
-def train_with_suppression(model, train_loader, test_loader, device):
+    with torch.no_grad():
+        for images, labels, _ in data_loader:
+            images, labels = images.to(device), labels.to(device)
+            logits = model(images)
+            predictions = logits.argmax(dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+
+    model.train()
+    return correct / total
+
+def train_with_suppression(model, train_loader, test_loader, device,
+                           use_discovery=True):
     print("\n" + "="*60)
     print("  SUPPRESSION TRAINING (shortcut penalty active)")
     print(f"  Lambda = {config.LAMBDA_SHORTCUT}")
+    print(f"  Mode   = {'SAC Discovery' if use_discovery else 'Hardcoded Mask'}")
     print("="*60)
 
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
-    loss_fn = ShortcutSuppressionLoss(lambda_shortcut=config.LAMBDA_SHORTCUT)
-    logger = TrainingLogger()
+    loss_fn   = ShortcutSuppressionLoss(lambda_shortcut=config.LAMBDA_SHORTCUT)
+    logger    = TrainingLogger()
+
+    # ── Shortcut Region Discovery — initialised before training ──────────────
+    discovery = ShortcutRegionDiscovery(
+        image_size=config.IMAGE_SIZE,
+        bottom_percent=0.4          # Flag top 40% most consistently attended pixels
+    )
+    discovered_mask = None       # Will be set after warmup ends
 
     history = {
         "train_loss": [], "task_loss": [], "shortcut_loss": [],
@@ -108,66 +132,80 @@ def train_with_suppression(model, train_loader, test_loader, device):
         epoch_loss, epoch_task, epoch_sc = 0.0, 0.0, 0.0
         correct, total = 0, 0
 
+        # ── Compute discovered mask at the END of warmup ──────────────────────
+        if epoch == config.WARMUP_EPOCHS + 1 and use_discovery:
+            discovered_mask = discovery.compute_mask(device)
+
         for batch_idx, (images, labels, _) in enumerate(train_loader):
             images = images.to(device)
             labels = labels.to(device)
 
             optimizer.zero_grad()
 
-            # ── Step 1: Forward pass for predictions (no grad needed here) ────
+            # ── Step 1: Forward pass ──────────────────────────────────────────
             logits = model(images)
 
-            # ── Step 2: Compute differentiable attribution maps ───────────────
-            # We do a SEPARATE forward pass on images_for_attr so that:
-            #   - autograd can trace: loss → attribution → model weights
-            #   - create_graph=True keeps the higher-order computation graph alive
-            #     so d(shortcut_loss)/d(theta) can actually be computed
+            # ── Step 2: Differentiable attributions ───────────────────────────
             images_for_attr = images.detach().clone().requires_grad_(True)
-
             logits_for_attr = model(images_for_attr)
 
-            # Sum the scores for the true class across the batch
             target_scores = logits_for_attr.gather(
                 1, labels.view(-1, 1)
             ).squeeze(1).sum()
 
-            # First-order gradient of class score w.r.t. input pixels
-            # create_graph=True is critical — without it, gradients stop here
-            # and never reach the model weights
             grads = torch.autograd.grad(
                 outputs=target_scores,
                 inputs=images_for_attr,
                 create_graph=True
-            )[0]   # shape: (batch, 3, H, W)
+            )[0]
 
-            # Gradient × Input attribution
-            # This is a well-known differentiable approximation of Integrated Gradients
-            # It tells us: "which pixels, scaled by their value, matter most?"
-            attributions = grads * images_for_attr   # shape: (batch, 3, H, W)
-            # ── WARMUP: only task loss for first N epochs ──────────────────
+            attributions = grads * images_for_attr   # (batch, 3, H, W)
+
+            # ── Step 3: Loss computation ──────────────────────────────────────
             if epoch <= config.WARMUP_EPOCHS:
+                # Warmup phase — task loss only, accumulate attributions
                 total_loss = loss_fn.task_loss_fn(logits, labels)
                 task_val   = total_loss.item()
                 sc_val     = 0.0
+
+                # Accumulate detached attributions for mask discovery
+                if use_discovery:
+                    discovery.accumulate(attributions.detach(),labels)
+
             else:
-                total_loss, task_val, sc_val = loss_fn(
-                    logits, labels, attributions, images
-                )
-        # ───────────────────────────────────────────────────────────────
-            # ── Step 4: Backprop and update ────────────────────────────────────
+                # Suppression phase
+                if use_discovery and discovered_mask is not None:
+                    # Use data-driven discovered mask
+                    batch_mask = discovered_mask.expand(
+                        images.size(0), 3,
+                        config.IMAGE_SIZE, config.IMAGE_SIZE
+                    )
+                    task_loss  = loss_fn.task_loss_fn(logits, labels)
+                    sc_loss    = compute_shortcut_loss_discovered(
+                        attributions, batch_mask
+                    )
+                    total_loss = task_loss + config.LAMBDA_SHORTCUT * sc_loss
+                    task_val   = task_loss.item()
+                    sc_val     = sc_loss.item()
+                else:
+                    # Fallback to hardcoded mask
+                    total_loss, task_val, sc_val = loss_fn(
+                        logits, labels, attributions, images
+                    )
+
+            # ── Step 4: Backprop ──────────────────────────────────────────────
             total_loss.backward()
             optimizer.step()
 
-            # Track metrics
             epoch_loss += total_loss.item()
             epoch_task += task_val
             epoch_sc   += sc_val
 
             predictions = logits.argmax(dim=1)
             correct += (predictions == labels).sum().item()
-            total += labels.size(0)
+            total   += labels.size(0)
 
-        # ── Epoch Summary ──────────────────────────────────────────────────────
+        # ── Epoch Summary ─────────────────────────────────────────────────────
         avg_loss  = epoch_loss / len(train_loader)
         avg_task  = epoch_task / len(train_loader)
         avg_sc    = epoch_sc   / len(train_loader)
@@ -185,29 +223,3 @@ def train_with_suppression(model, train_loader, test_loader, device):
         )
 
     return history
-
-def evaluate(model, data_loader, device):
-    """
-    Evaluates model accuracy on a dataset.
-
-    Args:
-        model       : PyTorch model
-        data_loader : DataLoader
-        device      : torch.device
-
-    Returns:
-        accuracy : float — fraction of correct predictions
-    """
-    model.eval()    # Disable dropout for evaluation
-    correct, total = 0, 0
-
-    with torch.no_grad():    # No gradient computation needed for eval
-        for images, labels, _ in data_loader:
-            images, labels = images.to(device), labels.to(device)
-            logits = model(images)
-            predictions = logits.argmax(dim=1)
-            correct += (predictions == labels).sum().item()
-            total += labels.size(0)
-
-    model.train()   # Switch back to train mode
-    return correct / total
