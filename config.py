@@ -10,7 +10,7 @@
 # DATASET SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 DATA_DIR = "./data/raw"          # Where MNIST will be downloaded to
-BIAS_RATIO = 1.0 # How "biased" the training data is.
+BIAS_RATIO = 0.8 # How "biased" the training data is.
                                  # 0.95 = 95% of training samples have the
                                  # shortcut color. Model will definitely cheat.
                                  # Lower this later to test edge cases.
@@ -57,3 +57,7 @@ RESULTS_DIR = "./results/figures"
 # ─────────────────────────────────────────────────────────────────────────────
 CHECKPOINT_DIR = "./checkpoints"
 SAVE_BEST_MODEL = True           # Save only the best model by validation accuracy
+
+
+JTT_ID_EPOCHS = 1
+JTT_LAMBDA_UP = 50

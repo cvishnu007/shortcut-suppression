@@ -1,24 +1,12 @@
 # =============================================================================
-# main.py — Entry Point
+# main.py — Entry Point  (Phase 2 update: JTT added)
 # =============================================================================
-# Run this file to start the project.
-#
 # USAGE:
-#   python main.py --mode baseline     # Train baseline (no suppression)
-#   python main.py --mode suppress     # Train with shortcut suppression
-#   python main.py --mode evaluate     # Evaluate both + standard visualizations
-#   python main.py --mode adversarial  # ← NEW: adversarial evaluation only
-#   python main.py --mode full         # Run everything end-to-end (recommended)
-#
-# ADVERSARIAL MODE:
-#   Loads pre-trained checkpoints (or trains both models if none exist) and
-#   runs the adversarial color-shift evaluation.  Produces two figures:
-#     results/figures/adversarial_comparison.png  ← main result bar chart
-#     results/figures/adversarial_per_class.png   ← per-class breakdown
-#
-#   The adversarial test set guarantees that every image's background color
-#   belongs to a DIFFERENT digit class.  A shortcut-reliant model collapses
-#   to ~10% accuracy; a shape-reliant model holds at 96%+.
+#   python main.py --mode baseline
+#   python main.py --mode suppress
+#   python main.py --mode adversarial --load_baseline X --load_suppressed Y
+#   python main.py --mode jtt                          ← NEW
+#   python main.py --mode full                         ← runs everything
 # =============================================================================
 
 import argparse
@@ -37,7 +25,7 @@ from evaluation.metrics import (
 )
 from evaluation.visualize import visualize_attribution_comparison, plot_training_curves
 
-# ── Phase 1 imports ────────────────────────────────────────────────────────────
+# Phase 1
 from data.adversarial_dataset import get_adversarial_loader
 from evaluation.adversarial_metrics import (
     compute_adversarial_report,
@@ -46,6 +34,9 @@ from evaluation.adversarial_metrics import (
     plot_per_class_adversarial,
 )
 
+# Phase 2
+from training.jtt_trainer import train_jtt
+
 
 # =============================================================================
 # CLI
@@ -53,90 +44,37 @@ from evaluation.adversarial_metrics import (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Shortcut Detection & Suppression — Explanation-Guided Training"
+        description="Shortcut Detection & Suppression"
     )
     parser.add_argument(
-        '--mode',
-        type=str,
-        default='full',
-        choices=['baseline', 'suppress', 'evaluate', 'adversarial', 'full'],
-        help=(
-            "Which mode to run.  "
-            "'adversarial' runs the color-shift stress test on trained models. "
-            "'full' runs everything end-to-end."
-        ),
+        '--mode', type=str, default='full',
+        choices=['baseline', 'suppress', 'evaluate', 'adversarial', 'jtt', 'full'],
+        help="Which mode to run."
     )
-    parser.add_argument(
-        '--lambda_shortcut',
-        type=float,
-        default=None,
-        help="Override lambda for the shortcut penalty (default: from config.py)",
-    )
-    parser.add_argument(
-        '--use_discovery',
-        action='store_true',
-        default=False,
-        help="Use SAC Discovery (unsupervised mask) instead of hardcoded mask.",
-    )
-    parser.add_argument(
-        '--load_baseline',
-        type=str,
-        default=None,
-        help="Path to a saved baseline checkpoint (.pth) — skip re-training.",
-    )
-    parser.add_argument(
-        '--load_suppressed',
-        type=str,
-        default=None,
-        help="Path to a saved suppressed checkpoint (.pth) — skip re-training.",
-    )
+    parser.add_argument('--lambda_shortcut', type=float, default=None)
+    parser.add_argument('--use_discovery', action='store_true', default=False)
+    parser.add_argument('--load_baseline', type=str, default=None)
+    parser.add_argument('--load_suppressed', type=str, default=None)
+    parser.add_argument('--load_jtt', type=str, default=None)
     return parser.parse_args()
 
 
 # =============================================================================
-# Adversarial evaluation block
+# Adversarial evaluation block (Phase 1 — unchanged)
 # =============================================================================
 
 def run_adversarial_evaluation(
-    baseline_model,
-    suppressed_model,
-    standard_test_loader,
-    device,
-    extra_models=None,
+    baseline_model, suppressed_model, standard_test_loader,
+    device, extra_models=None
 ):
-    """
-    Runs the full Phase 1 adversarial evaluation and saves all figures.
-
-    Args:
-        baseline_model       : trained baseline model
-        suppressed_model     : trained suppressed model
-        standard_test_loader : standard DataLoader (random colors)
-        device               : torch.device
-        extra_models         : dict {name: (std_acc, adv_acc)} for extra bars
-                               (pass ColorJitter / HighDropout accuracies here)
-
-    Returns:
-        summary : dict of scalar results from print_adversarial_comparison()
-    """
     print("\n" + "="*62)
     print("  PHASE 1 — ADVERSARIAL COLOR-SHIFT EVALUATION")
     print("="*62)
-    print(
-        "\n  Test protocol:\n"
-        "    Standard split  : colors are random (10% hit rate by luck)\n"
-        "    Adversarial split: every digit gets a WRONG class's color\n"
-        "    Shortcut model  → accuracy collapses to ~10%\n"
-        "    Shape model     → accuracy holds at ~96%+\n"
-    )
 
-    # Build adversarial loader (VRAM-cached, reuses MNIST already on disk)
     adv_loader = get_adversarial_loader()
-
-    # Free unreferenced tensors before running IG attribution
     torch.cuda.empty_cache()
     gc.collect()
 
-    # Run 2×2 evaluation
     results = compute_adversarial_report(
         baseline_model=baseline_model,
         suppressed_model=suppressed_model,
@@ -145,23 +83,18 @@ def run_adversarial_evaluation(
         device=device,
     )
 
-    # Print table and get scalar summary
     summary = print_adversarial_comparison(results, bias_ratio=config.BIAS_RATIO)
 
-    # Figure 1: grouped bar chart (main paper figure)
     plot_adversarial_bar_chart(
         results=results,
         save_path=os.path.join(config.RESULTS_DIR, "adversarial_comparison.png"),
         bias_ratio=config.BIAS_RATIO,
         extra_models=extra_models,
     )
-
-    # Figure 2: per-class breakdown on adversarial split
     plot_per_class_adversarial(
         results=results,
         save_path=os.path.join(config.RESULTS_DIR, "adversarial_per_class.png"),
     )
-
     return summary
 
 
@@ -172,7 +105,6 @@ def run_adversarial_evaluation(
 def main():
     args = parse_args()
 
-    # ── Setup ──────────────────────────────────────────────────────────────────
     set_seed(config.SEED)
     device = get_device()
 
@@ -180,93 +112,78 @@ def main():
     print(f"[Config] Bias Ratio      : {config.BIAS_RATIO}")
     print(f"[Config] Epochs          : {config.EPOCHS}")
     print(f"[Config] Lambda shortcut : {config.LAMBDA_SHORTCUT}")
-    print(f"[Config] SAC Discovery   : {args.use_discovery}")
+    print(f"[Config] JTT T_id        : {getattr(config, 'JTT_ID_EPOCHS', 1)}")
+    print(f"[Config] JTT lambda_up   : {getattr(config, 'JTT_LAMBDA_UP', 50)}")
 
-    # ── Data ───────────────────────────────────────────────────────────────────
     train_loader, test_loader = get_dataloaders()
 
-    # ── Models ─────────────────────────────────────────────────────────────────
     baseline_model   = get_model().to(device)
     suppressed_model = get_model().to(device)
+    jtt_model        = get_model().to(device)
 
-    # ── Optionally load pre-trained weights ────────────────────────────────────
+    # Load checkpoints if supplied
     if args.load_baseline and os.path.exists(args.load_baseline):
-        baseline_model, _, _ = load_checkpoint(
-            baseline_model, args.load_baseline, device
-        )
-        print(f"[Main] Loaded baseline from {args.load_baseline}")
-
+        baseline_model, _, _ = load_checkpoint(baseline_model, args.load_baseline, device)
     if args.load_suppressed and os.path.exists(args.load_suppressed):
-        suppressed_model, _, _ = load_checkpoint(
-            suppressed_model, args.load_suppressed, device
-        )
-        print(f"[Main] Loaded suppressed model from {args.load_suppressed}")
+        suppressed_model, _, _ = load_checkpoint(suppressed_model, args.load_suppressed, device)
+    if args.load_jtt and os.path.exists(args.load_jtt):
+        jtt_model, _, _ = load_checkpoint(jtt_model, args.load_jtt, device)
 
-    # ── Training ───────────────────────────────────────────────────────────────
     baseline_history    = None
     suppression_history = None
+    jtt_history         = None
 
+    # ── Baseline ───────────────────────────────────────────────────────────
     if args.mode in ['baseline', 'full'] and not args.load_baseline:
         baseline_history = train_baseline(
             baseline_model, train_loader, test_loader, device
         )
         if config.SAVE_BEST_MODEL:
             save_checkpoint(
-                baseline_model, None,
-                epoch=config.EPOCHS,
+                baseline_model, None, epoch=config.EPOCHS,
                 accuracy=baseline_history['test_acc'][-1],
                 path=os.path.join(config.CHECKPOINT_DIR, "baseline.pth"),
             )
 
+    # ── Suppression ────────────────────────────────────────────────────────
     if args.mode in ['suppress', 'full'] and not args.load_suppressed:
         if args.lambda_shortcut is not None:
             config.LAMBDA_SHORTCUT = args.lambda_shortcut
-
         suppression_history = train_with_suppression(
             suppressed_model, train_loader, test_loader, device,
             use_discovery=args.use_discovery,
         )
         if config.SAVE_BEST_MODEL:
             save_checkpoint(
-                suppressed_model, None,
-                epoch=config.EPOCHS,
+                suppressed_model, None, epoch=config.EPOCHS,
                 accuracy=suppression_history['test_acc'][-1],
                 path=os.path.join(config.CHECKPOINT_DIR, "suppressed.pth"),
             )
 
-    # ── Adversarial evaluation (Phase 1) ───────────────────────────────────────
-    if args.mode in ['adversarial', 'full']:
-        # If running in 'adversarial' mode without prior training, we need
-        # both models to exist.  Warn clearly instead of crashing silently.
-        if args.mode == 'adversarial':
-            if args.load_baseline is None and baseline_history is None:
-                print(
-                    "\n[Warning] --mode adversarial: no baseline model trained "
-                    "or loaded.\n"
-                    "  Either run --mode full, or pass --load_baseline <path>.\n"
-                    "  Proceeding with a randomly-initialized baseline "
-                    "(results will be ~10% for both models).\n"
-                )
-            if args.load_suppressed is None and suppression_history is None:
-                print(
-                    "\n[Warning] --mode adversarial: no suppressed model trained "
-                    "or loaded.\n"
-                    "  Proceeding with a randomly-initialized suppressed model.\n"
-                )
+    # ── JTT ────────────────────────────────────────────────────────────────
+    if args.mode in ['jtt', 'full'] and not args.load_jtt:
+        jtt_model, jtt_history = train_jtt(train_loader, test_loader, device)
+        if config.SAVE_BEST_MODEL:
+            save_checkpoint(
+                jtt_model, None, epoch=config.EPOCHS,
+                accuracy=jtt_history['test_acc'][-1],
+                path=os.path.join(config.CHECKPOINT_DIR, "jtt.pth"),
+            )
 
+    # ── Adversarial evaluation (Phase 1) ───────────────────────────────────
+    if args.mode in ['adversarial', 'full']:
         run_adversarial_evaluation(
             baseline_model=baseline_model,
             suppressed_model=suppressed_model,
             standard_test_loader=test_loader,
             device=device,
-            extra_models=None,   # populate with ColorJitter/HighDropout in Phase 2
+            extra_models=None,
         )
 
-    # ── Standard evaluation (unchanged from original) ──────────────────────────
+    # ── Full evaluation: all four models ───────────────────────────────────
     if args.mode in ['evaluate', 'full']:
-        print("\n[Evaluation] Computing standard metrics ...")
+        print("\n[Evaluation] Computing metrics for all models ...")
 
-        # ── ColorJitter baseline ───────────────────────────────────────────────
         from data.dataloader import get_dataloaders_jitter
         jitter_train_loader, jitter_test_loader = get_dataloaders_jitter()
         jitter_model = get_model().to(device)
@@ -275,7 +192,6 @@ def main():
             jitter_model, jitter_train_loader, jitter_test_loader, device
         )
 
-        # ── HighDropout baseline ───────────────────────────────────────────────
         dropout_model = get_model(dropout=0.8).to(device)
         print("\n[Baseline] Training HighDropout model ...")
         dropout_history = train_baseline(
@@ -285,40 +201,43 @@ def main():
         torch.cuda.empty_cache()
         gc.collect()
 
-        # ── Evaluate all four models ───────────────────────────────────────────
-        b_acc, b_per_class = compute_accuracy(baseline_model, test_loader, device)
-        b_shortcut = compute_average_shortcut_score(
-            baseline_model, test_loader, device, n_batches=5
-        )
-        print_evaluation_report("Baseline", b_acc, b_per_class, b_shortcut)
+        # Evaluate all five models
+        models_to_eval = [
+            ("Baseline",          baseline_model),
+            ("ColorJitter",       jitter_model),
+            ("HighDropout",       dropout_model),
+            ("JTT",               jtt_model),
+            ("Suppression (ours)", suppressed_model),
+        ]
 
-        j_acc, j_per_class = compute_accuracy(jitter_model, test_loader, device)
-        j_shortcut = compute_average_shortcut_score(
-            jitter_model, test_loader, device, n_batches=5
-        )
-        print_evaluation_report("ColorJitter", j_acc, j_per_class, j_shortcut)
+        results_table = {}
+        for name, model in models_to_eval:
+            acc, per_class = compute_accuracy(model, test_loader, device)
+            sc = compute_average_shortcut_score(model, test_loader, device, n_batches=5)
+            print_evaluation_report(name, acc, per_class, sc)
+            results_table[name] = {'acc': acc, 'shortcut': sc}
 
-        d_acc, d_per_class = compute_accuracy(dropout_model, test_loader, device)
-        d_shortcut = compute_average_shortcut_score(
-            dropout_model, test_loader, device, n_batches=5
-        )
-        print_evaluation_report("HighDropout", d_acc, d_per_class, d_shortcut)
+        # Summary comparison table
+        print(f"\n{'='*62}")
+        print(f"  FULL COMPARISON SUMMARY  (bias={config.BIAS_RATIO:.0%})")
+        print(f"{'='*62}")
+        print(f"  {'Method':<22} {'Test Acc':>10}  {'Shortcut Score':>15}")
+        print(f"  {'-'*50}")
+        for name, vals in results_table.items():
+            marker = " ←" if name == "Suppression (ours)" else ""
+            print(f"  {name:<22} {vals['acc']:>9.2%}  {vals['shortcut']:>14.4f}{marker}")
+        print(f"{'='*62}")
 
-        s_acc, s_per_class = compute_accuracy(suppressed_model, test_loader, device)
-        s_shortcut = compute_average_shortcut_score(
-            suppressed_model, test_loader, device, n_batches=5
-        )
-        print_evaluation_report("Suppression", s_acc, s_per_class, s_shortcut)
+        b_sc = results_table['Baseline']['shortcut']
+        s_sc = results_table['Suppression (ours)']['shortcut']
+        j_sc = results_table['JTT']['shortcut']
+        print(f"\n  Shortcut score vs Baseline:")
+        print(f"    JTT               : {b_sc:.4f} → {j_sc:.4f}  ({(b_sc-j_sc)/b_sc:.1%} reduction)")
+        print(f"    Suppression (ours): {b_sc:.4f} → {s_sc:.4f}  ({(b_sc-s_sc)/b_sc:.1%} reduction)")
 
-        print("\n[Summary]")
-        print(f"  Shortcut Score: {b_shortcut:.4f} → {s_shortcut:.4f}")
-        delta = b_shortcut - s_shortcut
-        print(f"  Reduction     : {delta:.4f} ({delta/b_shortcut:.1%})")
-
-        # ── Attribution visualization ──────────────────────────────────────────
+        # Attribution visualization
         print("\n[Visualization] Generating attribution comparison ...")
         sample_images, sample_labels, _ = next(iter(test_loader))
-
         visualize_attribution_comparison(
             baseline_model=baseline_model,
             suppressed_model=suppressed_model,
@@ -329,7 +248,6 @@ def main():
             n_samples=5,
         )
 
-        # ── Training curves (only when we actually trained both) ───────────────
         if args.mode == 'full' and baseline_history and suppression_history:
             plot_training_curves(
                 baseline_history, suppression_history,
