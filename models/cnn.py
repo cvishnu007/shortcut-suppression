@@ -89,7 +89,7 @@ class SimpleCNN(nn.Module):
         x = self.pool2(x)                 # (batch, 64,  7,  7)
 
         # Flatten: convert 3D feature maps to 1D vector for FC layers
-        x = x.view(x.size(0), -1)        # (batch, 64*7*7) = (batch, 3136)
+        x = x.reshape(x.size(0), -1)        # (batch, 64*7*7) = (batch, 3136)
 
         # Fully connected classification head
         x = self.dropout(self.relu(self.fc1(x)))   # (batch, 128)
@@ -115,18 +115,9 @@ class SimpleCNN(nn.Module):
         return features
 
 
-def get_model():
-    """
-    Factory function — creates and returns a fresh SimpleCNN.
-
-    Usage:
-        model = get_model()
-        model = model.to(device)
-    """
+def get_model(dropout=0.5):
     model = SimpleCNN(num_classes=config.NUM_CLASSES)
-
-    # Count and print total parameters (good to know for reports)
+    model.dropout = nn.Dropout(p=dropout)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] SimpleCNN created — {total_params:,} trainable parameters")
-
     return model

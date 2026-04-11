@@ -108,41 +108,157 @@ def is_shortcut(shortcut_scores, threshold=None):
 
     return shortcut_scores > threshold
 
-
 def compute_shortcut_loss(attributions, images):
+    bg_mask = get_background_mask(images)
+    bg_mask = bg_mask.expand_as(attributions)
+    abs_attr = attributions.abs()
+    bg_attr  = (abs_attr * bg_mask).sum(dim=(1,2,3))
+    total    = abs_attr.sum(dim=(1,2,3)) + 1e-8
+    return (bg_attr / total).mean()
+class ShortcutRegionDiscovery:
     """
-    Computes the shortcut penalty loss for training.
+    Discovers shortcut regions by finding pixels with LOW attribution
+    variance across classes.
 
-    This is the KEY contribution of our project.
-    By adding this to the training loss, we punish the model for
-    having high attribution in background (shortcut) regions.
+    The insight:
+        Shortcut region = attended to similarly regardless of which class
+                          is shown → LOW cross-class variance
+        Real feature    = attended to differently per class (digit shapes
+                          differ) → HIGH cross-class variance
 
-    The model is then forced to find other features (the digit shape)
-    to minimize this penalty.
+    Algorithm:
+        1. During warmup, accumulate per-class mean attribution maps
+        2. After warmup, compute variance across the 10 class maps
+        3. Bottom percentile of variance = suspected shortcut pixels
+    """
+
+    def __init__(self, image_size=28, num_classes=10, bottom_percent=0.4):
+        """
+        Args:
+            image_size     : int   — spatial size (28 for MNIST)
+            num_classes    : int   — number of classes (10 for MNIST)
+            bottom_percent : float — fraction of LOWEST variance pixels
+                             to flag as shortcut. 0.4 = bottom 40%.
+        """
+        self.image_size     = image_size
+        self.num_classes    = num_classes
+        self.bottom_percent = bottom_percent
+        self.mask           = None
+
+        # Per-class accumulators
+        # class_sum[c]   : running sum of attribution maps for class c → (H, W)
+        # class_count[c] : number of samples seen for class c
+        self.class_sum   = {}
+        self.class_count = {}
+        for c in range(num_classes):
+            self.class_sum[c]   = None
+            self.class_count[c] = 0
+
+    def accumulate(self, attributions, labels):
+        """
+        Accumulates per-class attribution maps during warmup.
+
+        Args:
+            attributions : Tensor (batch, 3, H, W) — detached, no grad
+            labels       : Tensor (batch,)          — class labels
+        """
+        # Collapse RGB → single channel: sum of absolute values → (batch, H, W)
+        abs_attr = attributions.detach().abs().sum(dim=1)
+
+        for c in range(self.num_classes):
+            # Find indices in batch belonging to class c
+            mask_c = (labels == c)
+            if mask_c.sum() == 0:
+                continue
+
+            # Mean attribution for class c in this batch → (H, W)
+            class_attr = abs_attr[mask_c].mean(dim=0)
+
+            if self.class_sum[c] is None:
+                self.class_sum[c] = class_attr.clone()
+            else:
+                self.class_sum[c] += class_attr
+
+            self.class_count[c] += 1
+
+    def compute_mask(self, device):
+        """
+        Computes the shortcut mask after warmup ends.
+
+        Steps:
+            1. Compute per-class mean attribution maps
+            2. Stack into (num_classes, H, W)
+            3. Compute pixel-wise variance across classes
+            4. Flag bottom_percent lowest-variance pixels as shortcut
+
+        Returns:
+            mask : Tensor (1, 1, H, W) — 1 = suspected shortcut pixel
+        """
+        class_means = []
+        for c in range(self.num_classes):
+            if self.class_sum[c] is None or self.class_count[c] == 0:
+                # No samples seen for this class — use zeros
+                h = self.image_size
+                class_means.append(torch.zeros(h, h, device=device))
+            else:
+                mean_c = self.class_sum[c] / self.class_count[c]
+                class_means.append(mean_c.to(device))
+
+        # Stack → (num_classes, H, W)
+        stacked = torch.stack(class_means, dim=0)
+
+        # Pixel-wise variance across classes → (H, W)
+        variance = stacked.var(dim=0)
+
+        # Flatten to find threshold
+        flat = variance.flatten()
+        k    = int(len(flat) * self.bottom_percent)
+        k    = max(k, 1)
+        threshold = flat.kthvalue(k).values
+
+        # Low variance = shortcut
+        mask = (variance <= threshold).float()
+
+        # Shape (1, 1, H, W) for broadcasting
+        self.mask = mask.unsqueeze(0).unsqueeze(0).to(device)
+
+        n_pixels = mask.sum().item()
+        print(f"[Discovery] Cross-class variance mask computed — "
+              f"{n_pixels:.0f}/{self.image_size**2} pixels flagged "
+              f"({n_pixels/self.image_size**2:.1%})")
+
+        return self.mask
+
+    def get_mask(self, batch_size, device):
+        """
+        Returns the discovered mask expanded to match a batch.
+
+        Args:
+            batch_size : int
+            device     : torch.device
+
+        Returns:
+            mask : Tensor (batch, 3, H, W)
+        """
+        if self.mask is None:
+            raise RuntimeError("Mask not computed yet. Call compute_mask() first.")
+
+        return self.mask.expand(
+            batch_size, 3,
+            self.image_size, self.image_size
+        ).to(device)
+def compute_shortcut_loss_discovered(attributions, discovered_mask):
+    """
+    Shortcut penalty loss using a DISCOVERED mask instead of brightness threshold.
 
     Args:
-        attributions : Tensor of shape (batch, 3, H, W) — MUST have gradients
-        images       : Tensor of shape (batch, 3, H, W)
+        attributions    : Tensor (batch, 3, H, W) — WITH gradients
+        discovered_mask : Tensor (batch, 3, H, W) — from discovery.get_mask()
 
     Returns:
-        loss : Scalar tensor — the shortcut penalty
-               This can be directly backpropagated.
-
-    FORMULA:
-        L_shortcut = mean over batch of:
-                     sum of (|attribution| * background_mask)
-
-    WHY MEAN AND NOT SUM?
-        Mean keeps the loss scale consistent regardless of batch size.
+        loss : Scalar tensor — normalized shortcut penalty
     """
-    # Get background mask
-    bg_mask = get_background_mask(images)              # (batch, 1, H, W)
-    bg_mask = bg_mask.expand_as(attributions)          # (batch, 3, H, W)
-
-    # How much attribution lands on background, per image
-    bg_attribution = (attributions.abs() * bg_mask)    # (batch, 3, H, W)
-
-    # Average over the whole batch → scalar
-    loss = bg_attribution.mean()
-
-    return loss
+    abs_attr = attributions.abs()
+    bg_attr  = (abs_attr * discovered_mask).sum(dim=(1, 2, 3))
+    total    = abs_attr.sum(dim=(1, 2, 3)) + 1e-8
+    return (bg_attr / total).mean()

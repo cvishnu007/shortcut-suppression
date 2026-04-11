@@ -49,21 +49,20 @@ def get_device():
 def save_checkpoint(model, optimizer, epoch, accuracy, path):
     """
     Saves model state to disk so we can resume or reload later.
-
-    Args:
-        model     : PyTorch model
-        optimizer : PyTorch optimizer
-        epoch     : int — current epoch number
-        accuracy  : float — current best accuracy
-        path      : str — file path to save to (e.g., './checkpoints/best.pth')
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save({
+    
+    checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
         'accuracy': accuracy,
-    }, path)
+    }
+    
+    # Only try to save optimizer state if an optimizer was actually passed
+    if optimizer is not None:
+        checkpoint['optimizer_state_dict'] = optimizer.state_dict()
+        
+    torch.save(checkpoint, path)
     print(f"[Checkpoint] Saved at epoch {epoch} (acc={accuracy:.4f}) → {path}")
 
 

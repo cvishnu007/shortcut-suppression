@@ -10,7 +10,7 @@
 # DATASET SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 DATA_DIR = "./data/raw"          # Where MNIST will be downloaded to
-BIAS_RATIO = 1.0               # How "biased" the training data is.
+BIAS_RATIO = 0.8 # How "biased" the training data is.
                                  # 0.95 = 95% of training samples have the
                                  # shortcut color. Model will definitely cheat.
                                  # Lower this later to test edge cases.
@@ -27,15 +27,16 @@ MODEL_NAME = "SimpleCNN"         # We use a simple CNN — easy to explain
 # ─────────────────────────────────────────────────────────────────────────────
 # TRAINING SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
-EPOCHS = 20                      # How many full passes over the dataset
-BATCH_SIZE = 128                # How many images per gradient update step
+EPOCHS = 20
+WARMUP_EPOCHS = 5                  # How many full passes over the dataset
+BATCH_SIZE = 512              # How many images per gradient update step
 LEARNING_RATE = 1e-3             # How fast the model updates its weights
 SEED = 42                        # Random seed — keeps results reproducible
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SHORTCUT SUPPRESSION SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
-LAMBDA_SHORTCUT = 10.0            # Weight of the shortcut penalty in total loss
+LAMBDA_SHORTCUT = 1.0            # Weight of the shortcut penalty in total loss
                                  # Total loss = Task loss + λ * Shortcut loss
                                  # Higher λ = stronger punishment for cheating
 
@@ -56,3 +57,16 @@ RESULTS_DIR = "./results/figures"
 # ─────────────────────────────────────────────────────────────────────────────
 CHECKPOINT_DIR = "./checkpoints"
 SAVE_BEST_MODEL = True           # Save only the best model by validation accuracy
+
+
+JTT_ID_EPOCHS = 1
+JTT_LAMBDA_UP = 50
+
+
+WATERBIRDS_DIR            = "./data/raw/waterbird_complete95_forest2water2/waterbird_complete95_forest2water2"
+WATERBIRDS_EPOCHS         = 30
+WATERBIRDS_BATCH          = 64
+WATERBIRDS_LR             = 1e-4
+WATERBIRDS_LAMBDA         = 0.5
+WATERBIRDS_WARMUP         = 5
+WATERBIRDS_BORDER_FRACTION = 0.4
