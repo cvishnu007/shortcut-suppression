@@ -61,3 +61,12 @@ SAVE_BEST_MODEL = True           # Save only the best model by validation accura
 
 JTT_ID_EPOCHS = 1
 JTT_LAMBDA_UP = 50
+
+
+WATERBIRDS_DIR            = "./data/raw/waterbird_complete95_forest2water2/waterbird_complete95_forest2water2"
+WATERBIRDS_EPOCHS         = 30
+WATERBIRDS_BATCH          = 64
+WATERBIRDS_LR             = 1e-4
+WATERBIRDS_LAMBDA         = 0.5
+WATERBIRDS_WARMUP         = 5
+WATERBIRDS_BORDER_FRACTION = 0.4
